@@ -23,6 +23,19 @@ MODEL_CONFIG = {
         "model_name": "GEM_PIX",
         "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT"
     },
+    # 2K 版本
+    "gemini-2.5-flash-image-landscape-2k": {
+        "type": "image",
+        "model_name": "GEM_PIX",
+        "aspect_ratio": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+        "upsample_2k": True
+    },
+    "gemini-2.5-flash-image-portrait-2k": {
+        "type": "image",
+        "model_name": "GEM_PIX",
+        "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT",
+        "upsample_2k": True
+    },
 
     # 图片生成 - GEM_PIX_2 (Gemini 3.0 Pro)
     "gemini-3.0-pro-image-landscape": {
@@ -35,6 +48,19 @@ MODEL_CONFIG = {
         "model_name": "GEM_PIX_2",
         "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT"
     },
+    # 2K 版本
+    "gemini-3.0-pro-image-landscape-2k": {
+        "type": "image",
+        "model_name": "GEM_PIX_2",
+        "aspect_ratio": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+        "upsample_2k": True
+    },
+    "gemini-3.0-pro-image-portrait-2k": {
+        "type": "image",
+        "model_name": "GEM_PIX_2",
+        "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT",
+        "upsample_2k": True
+    },
 
     # 图片生成 - IMAGEN_3_5 (Imagen 4.0)
     "imagen-4.0-generate-preview-landscape": {
@@ -46,6 +72,19 @@ MODEL_CONFIG = {
         "type": "image",
         "model_name": "IMAGEN_3_5",
         "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT"
+    },
+    # 2K 版本
+    "imagen-4.0-generate-preview-landscape-2k": {
+        "type": "image",
+        "model_name": "IMAGEN_3_5",
+        "aspect_ratio": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+        "upsample_2k": True
+    },
+    "imagen-4.0-generate-preview-portrait-2k": {
+        "type": "image",
+        "model_name": "IMAGEN_3_5",
+        "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT",
+        "upsample_2k": True
     },
 
     # ========== 文生视频 (T2V - Text to Video) ==========
@@ -572,15 +611,85 @@ class GenerationHandler:
                 image_inputs=image_inputs
             )
 
-            # 提取URL
+            # 提取URL和mediaId
             media = result.get("media", [])
             if not media:
                 yield self._create_error_response("生成结果为空")
                 return
 
-            image_url = media[0]["image"]["generatedImage"]["fifeUrl"]
+            generated_image = media[0]["image"]["generatedImage"]
+            image_url = generated_image["fifeUrl"]
 
-            # 缓存图片 (如果启用)
+            # 检查是否需要2K放大
+            upsample_2k = model_config.get("upsample_2k", False)
+            if upsample_2k:
+                if stream:
+                    yield self._create_stream_chunk("正在放大到2K分辨率...\n")
+
+                # 尝试从多个可能的位置获取mediaId
+                media_id = None
+                # 尝试位置1: generatedImage.mediaGenerationId.mediaGenerationId
+                if "mediaGenerationId" in generated_image:
+                    mg_id = generated_image["mediaGenerationId"]
+                    if isinstance(mg_id, dict):
+                        media_id = mg_id.get("mediaGenerationId")
+                    else:
+                        media_id = mg_id
+                # 尝试位置2: generatedImage.mediaId
+                if not media_id and "mediaId" in generated_image:
+                    media_id = generated_image["mediaId"]
+                # 尝试位置3: media[0].mediaId
+                if not media_id and "mediaId" in media[0]:
+                    media_id = media[0]["mediaId"]
+                # 尝试位置4: media[0].image.mediaId
+                if not media_id and "mediaId" in media[0].get("image", {}):
+                    media_id = media[0]["image"]["mediaId"]
+
+                if not media_id:
+                    debug_logger.log_error(f"[2K] 无法获取mediaId, 返回结构: {json.dumps(media[0], ensure_ascii=False)[:500]}")
+                    if stream:
+                        yield self._create_stream_chunk("⚠️ 无法获取mediaId，返回1K图片\n")
+                else:
+                    try:
+                        upsample_result = await self.flow_client.upsample_image(
+                            at=token.at,
+                            project_id=project_id,
+                            media_id=media_id
+                        )
+
+                        # 返回的是base64编码的图片
+                        encoded_image = upsample_result.get("encodedImage")
+                        if encoded_image:
+                            if stream:
+                                yield self._create_stream_chunk("✅ 2K放大成功\n")
+
+                            # 保存base64图片到缓存
+                            image_bytes = base64.b64decode(encoded_image)
+                            cached_filename = await self.file_cache.save_bytes(image_bytes, "image", "jpg")
+                            local_url = f"{self._get_base_url()}/tmp/{cached_filename}"
+
+                            # 返回2K结果
+                            if stream:
+                                yield self._create_stream_chunk(
+                                    f"![Generated Image 2K]({local_url})",
+                                    finish_reason="stop"
+                                )
+                            else:
+                                yield self._create_completion_response(
+                                    local_url,
+                                    media_type="image"
+                                )
+                            return
+                        else:
+                            debug_logger.log_error("[2K] upsample返回无encodedImage")
+                            if stream:
+                                yield self._create_stream_chunk("⚠️ 放大失败，返回1K图片\n")
+                    except Exception as e:
+                        debug_logger.log_error(f"[2K] upsample失败: {str(e)}")
+                        if stream:
+                            yield self._create_stream_chunk(f"⚠️ 放大失败: {str(e)}，返回1K图片\n")
+
+            # 缓存图片 (如果启用) - 1K图片或2K失败后的fallback
             local_url = image_url
             if config.cache_enabled:
                 try:

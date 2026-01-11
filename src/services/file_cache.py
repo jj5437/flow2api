@@ -268,6 +268,41 @@ class FileCache:
         """Get full path to cached file"""
         return self.cache_dir / filename
 
+    async def save_bytes(self, data: bytes, media_type: str, ext: str = None) -> str:
+        """
+        Save raw bytes to cache
+
+        Args:
+            data: Raw bytes to save
+            media_type: 'image' or 'video'
+            ext: File extension (without dot), defaults to jpg for image, mp4 for video
+
+        Returns:
+            Local cache filename
+        """
+        # Generate unique filename based on content hash
+        content_hash = hashlib.md5(data).hexdigest()
+
+        # Determine file extension
+        if ext:
+            file_ext = f".{ext}"
+        elif media_type == "video":
+            file_ext = ".mp4"
+        elif media_type == "image":
+            file_ext = ".jpg"
+        else:
+            file_ext = ""
+
+        filename = f"{content_hash}{file_ext}"
+        file_path = self.cache_dir / filename
+
+        # Save file
+        with open(file_path, 'wb') as f:
+            f.write(data)
+
+        debug_logger.log_info(f"File saved from bytes: {filename} ({len(data)} bytes)")
+        return filename
+
     def set_timeout(self, timeout: int):
         """Set cache timeout in seconds"""
         self.default_timeout = timeout

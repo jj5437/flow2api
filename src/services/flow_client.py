@@ -102,7 +102,8 @@ class FlowClient:
         use_st: bool = False,
         st_token: Optional[str] = None,
         use_at: bool = False,
-        at_token: Optional[str] = None
+        at_token: Optional[str] = None,
+        timeout: Optional[int] = None
     ) -> Dict[str, Any]:
         """统一HTTP请求处理
 
@@ -153,6 +154,7 @@ class FlowClient:
             )
 
         start_time = time.time()
+        request_timeout = timeout if timeout is not None else self.timeout
 
         try:
             async with AsyncSession() as session:
@@ -161,7 +163,7 @@ class FlowClient:
                         url,
                         headers=headers,
                         proxy=proxy_url,
-                        timeout=self.timeout,
+                        timeout=request_timeout,
                         impersonate="chrome110"
                     )
                 else:  # POST
@@ -170,7 +172,7 @@ class FlowClient:
                         headers=headers,
                         json=json_data,
                         proxy=proxy_url,
-                        timeout=self.timeout,
+                        timeout=request_timeout,
                         impersonate="chrome110"
                     )
 
@@ -423,6 +425,56 @@ class FlowClient:
             json_data=json_data,
             use_at=True,
             at_token=at
+        )
+
+        return result
+
+    # ========== 图片放大 (使用AT) - 同步返回 ==========
+
+    async def upsample_image(
+        self,
+        at: str,
+        project_id: str,
+        media_id: str,
+        target_resolution: str = "UPSAMPLE_IMAGE_RESOLUTION_2K"
+    ) -> dict:
+        """放大图片到2K分辨率
+
+        Args:
+            at: Access Token
+            project_id: 项目ID
+            media_id: 图片的mediaId (从生成结果中获取)
+            target_resolution: 目标分辨率，默认2K
+
+        Returns:
+            {
+                "encodedImage": "base64编码的图片数据"
+            }
+        """
+        url = f"{self.api_base_url}/flow/upsampleImage"
+
+        # 获取 reCAPTCHA token
+        recaptcha_token = await self._get_recaptcha_token(project_id) or ""
+        session_id = self._generate_session_id()
+
+        json_data = {
+            "mediaId": media_id,
+            "targetResolution": target_resolution,
+            "clientContext": {
+                "recaptchaToken": recaptcha_token,
+                "sessionId": session_id,
+                "projectId": project_id,
+                "tool": "PINHOLE"
+            }
+        }
+
+        result = await self._make_request(
+            method="POST",
+            url=url,
+            json_data=json_data,
+            use_at=True,
+            at_token=at,
+            timeout=300  # 2K图片数据量大，需要更长超时时间
         )
 
         return result
